@@ -1,4 +1,5 @@
 #![warn(missing_docs)]
+#![allow(dead_code)]
 
 //! swnb_timer is a timer base on binaryHeap;
 //! support async style or callback style;
