@@ -12,14 +12,12 @@ use std::task::{Context, Poll};
 struct Task {
     time: std::time::Instant,
     is_deleted: Arc<AtomicBool>,
-    callback: Option<Box<dyn FnOnce() + Send>>,
+    callback: Box<dyn FnOnce() + Send>,
 }
 
 impl Task {
-    fn call(&mut self) {
-        if let Some(job) = self.callback.take() {
-            job()
-        }
+    fn call(self) {
+        (self.callback)();
     }
 }
 
@@ -60,6 +58,8 @@ impl Eq for Task {}
 /// timer.set_timeout(||{
 ///     println!("after 1 sec");
 /// },Duration::from_secs(1));
+///
+/// std::thread::sleep(Duration::from_secs(2));
 /// ```
 pub struct Timer {
     thread_handler: std::thread::JoinHandle<()>,
@@ -92,7 +92,8 @@ impl Timer {
     ///     println!("after 2 sec");
     /// },Duration::from_secs(2));
     ///
-    /// timer.join();
+    /// std::thread::sleep(Duration::from_secs(3));
+    ///
     /// ```
     ///
     /// Async usage:
@@ -117,10 +118,6 @@ impl Timer {
             thread_handler,
             cond,
         }
-    }
-
-    pub fn join(self) {
-        self.thread_handler.join().unwrap();
     }
 
     fn handle_task(cond: Arc<(Condvar, Mutex<BinaryHeap<Task>>)>) -> std::thread::JoinHandle<()> {
@@ -153,7 +150,7 @@ impl Timer {
                     }
                 }
 
-                while let Some(mut task) = locker.pop() {
+                while let Some(task) = locker.pop() {
                     if task.time < std::time::Instant::now() && !task.is_deleted.load(SeqCst) {
                         task.call();
                     } else {
@@ -189,7 +186,7 @@ impl Timer {
     ///     println!("after 2 sec");
     /// },Duration::from_secs(2));
     ///
-    /// timer.join();
+    /// std::thread::sleep(Duration::from_secs(3));
     /// ```
     ///
     /// cancel_callback:
@@ -209,7 +206,7 @@ impl Timer {
     ///    println!("cancel previous timeout callback");
     /// },Duration::from_secs(1));
     ///
-    /// timer.join();
+    /// std::thread::sleep(Duration::from_secs(3));
     /// ```
     pub fn set_timeout(
         &self,
@@ -219,7 +216,7 @@ impl Timer {
         let now = std::time::Instant::now();
         let is_deleted = Arc::new(AtomicBool::new(false));
         let task = Task {
-            callback: Some(Box::new(callback)),
+            callback: Box::new(callback),
             is_deleted: is_deleted.clone(),
             time: now + duration,
         };
@@ -231,7 +228,7 @@ impl Timer {
         move || is_deleted.store(true, SeqCst)
     }
 
-    /// wait for `Duration` time
+    /// wait for `duration` time
     ///
     /// Examples
     ///
@@ -243,9 +240,9 @@ impl Timer {
     ///
     /// let async_block = async {
     ///     timer.wait(Duration::from_secs(1)).await;
-    /// }
+    /// };
     ///
-    /// timer.join();
+    /// // blocking_on(async_block);
     /// ```
     ///
     pub async fn wait(&self, duration: std::time::Duration) {
