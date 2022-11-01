@@ -1,6 +1,6 @@
 [package]
 name = "swnb-timer"
-version = "0.1.1"
+version = "0.1.2"
 edition = "2021"
 description = "timer can register timeout callback"
 license-file = "LICENSE"
