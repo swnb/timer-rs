@@ -45,7 +45,7 @@ impl Ord for Task {
 impl Eq for Task {}
 
 /// Timer store all timeout callback base on binaryHeap;
-/// will duration is reach
+/// The callback function will be triggered when the time expires
 ///
 /// Example
 ///
