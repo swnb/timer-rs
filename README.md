@@ -1,6 +1,6 @@
 # timer-rs
 
-> timer can execute a function, after waiting a specified number of milliseconds. also support async style api
+> timer can execute a function, after waiting a specified number of time. also support async style api
 
 ## install
 
