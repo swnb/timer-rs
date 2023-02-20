@@ -1,4 +1,3 @@
-use std::alloc::System;
 use std::cmp::{Eq, Ord, Ordering};
 use std::collections::BinaryHeap;
 use std::future::Future;
@@ -8,7 +7,7 @@ use std::sync::{
     Arc, Condvar, Mutex,
 };
 use std::task::{Context, Poll};
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant};
 
 enum Callback {
     Once(Option<Box<dyn FnOnce() + Send>>),
