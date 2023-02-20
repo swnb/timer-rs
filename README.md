@@ -35,6 +35,7 @@ fn main(){
     );
 
     std::thread::sleep(Duration::from_secs(2));
+    assert_eq!(count.load(SeqCst), 1);
 }
 ```
 
