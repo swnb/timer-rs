@@ -14,6 +14,7 @@ mod tests {
     use std::sync::{atomic::AtomicUsize, Arc};
 
     use std::sync::atomic::Ordering::SeqCst;
+    use std::thread::sleep;
     use std::time::Duration;
 
     use super::*;
@@ -76,5 +77,36 @@ mod tests {
         cancel_timeout();
         std::thread::sleep(Duration::from_secs(1));
         assert_eq!(count.load(SeqCst), 0);
+    }
+
+    #[test]
+    fn test_interval() {
+        let timer = Timer::new();
+
+        let count: Arc<AtomicUsize> = Default::default();
+
+        let stop = timer.set_interval(
+            {
+                let count = count.clone();
+                move || {
+                    count.fetch_add(1, SeqCst);
+                    println!("increase");
+                }
+            },
+            Duration::from_secs(3),
+        );
+
+        sleep(Duration::from_secs(7));
+        stop();
+        sleep(Duration::from_secs(3));
+        assert_eq!(count.load(SeqCst), 2);
+    }
+
+    #[test]
+    fn test_time() {
+        let now = std::time::Instant::now();
+        let now_after = now + Duration::from_secs(10);
+        let now = std::time::Instant::now();
+        dbg!(now_after > now);
     }
 }

@@ -1,3 +1,4 @@
+use std::alloc::System;
 use std::cmp::{Eq, Ord, Ordering};
 use std::collections::BinaryHeap;
 use std::future::Future;
@@ -7,17 +8,36 @@ use std::sync::{
     Arc, Condvar, Mutex,
 };
 use std::task::{Context, Poll};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+
+enum Callback {
+    Once(Option<Box<dyn FnOnce() + Send>>),
+    Mut(Box<dyn FnMut() + Send>),
+}
 
 // scheduler unit
 struct Task {
     time: std::time::Instant,
     is_deleted: Arc<AtomicBool>,
-    callback: Box<dyn FnOnce() + Send>,
+    reuseable: bool,
+    callback: Callback,
+    duration: Duration,
 }
 
 impl Task {
-    fn call(self) {
-        (self.callback)();
+    fn call(&mut self) {
+        match self.callback {
+            Callback::Once(ref mut f) => {
+                if let Some(f) = f.take() {
+                    f()
+                }
+            }
+            Callback::Mut(ref mut f) => f(),
+        }
+    }
+
+    fn is_deleted(&self) -> bool {
+        self.is_deleted.load(SeqCst)
     }
 }
 
@@ -121,7 +141,7 @@ impl Timer {
     }
 
     fn handle_task(cond: Arc<(Condvar, Mutex<BinaryHeap<Task>>)>) -> std::thread::JoinHandle<()> {
-        std::thread::spawn(move || {
+        let worker = move || {
             let mut locker = cond.1.lock().unwrap();
             loop {
                 loop {
@@ -135,11 +155,13 @@ impl Timer {
                                 locker.pop();
                             } else {
                                 let now = std::time::Instant::now();
-                                if time < now {
+                                if time <= now {
                                     break;
                                 } else {
-                                    let (new_locker, _) =
-                                        cond.0.wait_timeout(locker, time - now).unwrap();
+                                    let (new_locker, _) = cond
+                                        .0
+                                        .wait_timeout(locker, time.duration_since(now))
+                                        .unwrap();
                                     locker = new_locker;
                                 }
                             }
@@ -150,18 +172,31 @@ impl Timer {
                     }
                 }
 
-                locker.pop().unwrap().call();
-
                 while let Some(task) = locker.peek() {
-                    if task.time < std::time::Instant::now() && !task.is_deleted.load(SeqCst) {
-                        let task = locker.pop().unwrap();
+                    if task.is_deleted() {
+                        locker.pop();
+                        continue;
+                    }
+                    let now = Instant::now();
+
+                    if task.time <= now {
+                        let mut task = locker.pop().unwrap();
                         task.call();
+                        if task.reuseable {
+                            task.time = now + task.duration;
+                            locker.push(task);
+                        }
                     } else {
                         break;
                     }
                 }
             }
-        })
+        };
+
+        std::thread::Builder::new()
+            .name("swnb-timer".into())
+            .spawn(worker)
+            .unwrap()
     }
 
     /// set_timeout accept two arguments, callback and duration;
@@ -217,17 +252,92 @@ impl Timer {
     ) -> impl FnOnce() + Sync + 'static {
         let now = std::time::Instant::now();
         let is_deleted = Arc::new(AtomicBool::new(false));
+
         let task = Task {
-            callback: Box::new(callback),
+            callback: Callback::Once(Some(Box::new(callback))),
             is_deleted: is_deleted.clone(),
             time: now + duration,
+            reuseable: false,
+            duration,
         };
 
+        self.push_task(task);
+
+        move || is_deleted.store(true, SeqCst)
+    }
+
+    /// set_interval is basically consistent with set_timeout
+    /// callback will run every duration;
+    /// if you want to cancel interval,
+    /// set_interval return cancel function,
+    /// run it will cancel current interval callback;
+    ///
+    /// # Examples
+    ///
+    /// set_interval:
+    ///
+    /// ```
+    /// use swnb_timer::Timer;
+    /// use std::time::Duration;
+    ///
+    /// let timer = Timer::new();
+    ///
+    /// timer.set_interval(||{
+    ///     println!("every 1 sec");
+    /// },Duration::from_secs(1));
+    ///
+    /// timer.set_interval(||{
+    ///     println!("every 2 sec");
+    /// },Duration::from_secs(2));
+    ///
+    /// std::thread::sleep(Duration::from_secs(3));
+    /// ```
+    ///
+    /// cancel_interval:
+    ///
+    /// ```
+    /// use swnb_timer::Timer;
+    /// use std::time::Duration;
+    ///
+    /// let timer = Timer::new();
+    ///
+    /// let cancel = timer.set_interval(||{
+    ///     println!("every 2 sec");
+    /// },Duration::from_secs(2));
+    ///
+    /// timer.set_timeout(move ||{
+    ///    cancel();
+    ///    println!("cancel previous timeout callback");
+    /// },Duration::from_secs(1));
+    ///
+    /// std::thread::sleep(Duration::from_secs(7));
+    /// ```
+    pub fn set_interval(
+        &self,
+        callback: impl FnMut() + 'static + Send,
+        duration: std::time::Duration,
+    ) -> impl FnOnce() + Sync + 'static {
+        let now = std::time::Instant::now();
+        let is_deleted: Arc<AtomicBool> = Default::default();
+
+        let task = Task {
+            callback: Callback::Mut(Box::new(callback)),
+            is_deleted: is_deleted.clone(),
+            time: now + duration,
+            reuseable: true,
+            duration,
+        };
+
+        self.push_task(task);
+
+        move || is_deleted.store(true, SeqCst)
+    }
+
+    fn push_task(&self, task: Task) {
         let mut locker = self.cond.1.lock().unwrap();
         locker.push(task);
         drop(locker);
         self.cond.0.notify_one();
-        move || is_deleted.store(true, SeqCst)
     }
 
     /// wait for `duration` time
@@ -296,5 +406,18 @@ impl<'a> FutureTimer<'a> {
             is_resolved: Arc::new(AtomicBool::new(false)),
             timer,
         }
+    }
+}
+
+mod test {
+    use std::{default, mem::size_of, time::Instant};
+
+    #[test]
+    fn test_size() {
+        use super::Task;
+        dbg!(size_of::<Task>());
+        dbg!(size_of::<Instant>());
+        let v: bool = Default::default();
+        dbg!(v);
     }
 }
