@@ -150,11 +150,11 @@ impl Timer {
                     }
                 }
 
-                while let Some(task) = locker.pop() {
+                while let Some(task) = locker.peek() {
                     if task.time < std::time::Instant::now() && !task.is_deleted.load(SeqCst) {
+                        let task = locker.pop().unwrap();
                         task.call();
                     } else {
-                        locker.push(task);
                         break;
                     }
                 }
